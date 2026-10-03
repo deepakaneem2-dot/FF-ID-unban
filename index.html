@@ -1,0 +1,276 @@
+import time
+import sqlite3
+import hashlib
+from flask import Flask, request, jsonify
+
+app = Flask("FF_Official_Server")
+DB_NAME = "ff_official_game.db"
+
+# ================= Database Setup =================
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Players Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS players (
+            player_id TEXT PRIMARY KEY,
+            username TEXT,
+            coins INTEGER DEFAULT 100,
+            tokens INTEGER DEFAULT 0,
+            wood INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0,
+            ban_reason TEXT DEFAULT '',
+            last_action_time REAL DEFAULT 0,
+            admin_token TEXT DEFAULT 'ADMIN_SECRET_KEY_123'
+        )
+    ''')
+    
+    # Inventory Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id TEXT,
+            item_name TEXT,
+            quantity INTEGER DEFAULT 1
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# ================= Anti-Cheat Layer =================
+FORBIDDEN_TOOLS = ["gameguardian", "modmenu", "lucky_patcher", "cheatengine", "fake_injector"]
+
+def check_anti_cheat(player, client_signatures, min_action_delay=0.8):
+    current_time = time.time()
+    player_id = player["player_id"]
+    
+    # 1. Glitch / Speed-Hack Detection (Spam action detection)
+    time_diff = current_time - player["last_action_time"]
+    if time_diff < min_action_delay:
+        ban_player(player_id, "Anti-Cheat Trigger: Speed Hack / Glitch Exploitation")
+        return False, "Banned: Speed hack detected!"
+
+    # 2. Fake Tool / Mod Menu Detection
+    for sig in client_signatures:
+        if any(tool in sig.lower() for tool in FORBIDDEN_TOOLS):
+            ban_player(player_id, f"Anti-Cheat Trigger: Detected illegal tool ({sig})")
+            return False, "Banned: Third-party illegal mod tool detected!"
+
+    return True, "Passed"
+
+def ban_player(player_id, reason):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE players SET is_banned = 1, ban_reason = ? WHERE player_id = ?", (reason, player_id))
+    conn.commit()
+    conn.close()
+
+# ================= Player Routes =================
+
+# 1. Register / Login
+@app.route('/api/player/join', methods=['POST'])
+def join_game():
+    data = request.json
+    player_id = data.get("player_id")
+    username = data.get("username", "Survivor")
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM players WHERE player_id = ?", (player_id,))
+    player = cursor.fetchone()
+    
+    if not player:
+        cursor.execute("INSERT INTO players (player_id, username, last_action_time) VALUES (?, ?, ?)",
+                       (player_id, username, time.time()))
+        conn.commit()
+    
+    conn.close()
+    return jsonify({"status": "success", "message": "Welcome to FF official!"})
+
+# 2. Jungle - Chop Wood / Earn Tokens
+@app.route('/api/jungle/chop_tree', methods=['POST'])
+def chop_tree():
+    data = request.json
+    player_id = data.get("player_id")
+    signatures = data.get("client_env_signatures", [])
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM players WHERE player_id = ?", (player_id,))
+    player = cursor.fetchone()
+    
+    if not player:
+        conn.close()
+        return jsonify({"error": "Player not found"}), 404
+        
+    if player["is_banned"] == 1:
+        conn.close()
+        return jsonify({"error": f"Account Banned: {player['ban_reason']}"}), 403
+
+    # Anti-cheat check
+    passed, msg = check_anti_cheat(player, signatures, min_action_delay=1.0)
+    if not passed:
+        conn.close()
+        return jsonify({"error": msg}), 403
+
+    # Jungle Rewards: 2 Tokens + 1 Wood per chop
+    new_tokens = player["tokens"] + 2
+    new_wood = player["wood"] + 1
+    
+    cursor.execute('''
+        UPDATE players 
+        SET tokens = ?, wood = ?, last_action_time = ? 
+        WHERE player_id = ?
+    ''', (new_tokens, new_wood, time.time(), player_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        "status": "success",
+        "message": "Ped safalta-purvak kata!",
+        "reward": {"tokens_added": 2, "wood_added": 1},
+        "wallet": {"total_tokens": new_tokens, "total_wood": new_wood}
+    })
+
+# 3. Market - Sell Materials for Coins
+@app.route('/api/market/sell', methods=['POST'])
+def sell_items():
+    data = request.json
+    player_id = data.get("player_id")
+    item_type = data.get("item_type") # "wood" ya "tokens"
+    amount = int(data.get("amount", 0))
+
+    if amount <= 0:
+        return jsonify({"error": "Invalid amount"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM players WHERE player_id = ?", (player_id,))
+    player = cursor.fetchone()
+
+    if not player or player["is_banned"] == 1:
+        conn.close()
+        return jsonify({"error": "Access denied"}), 403
+
+    if item_type == "wood":
+        if player["wood"] < amount:
+            conn.close()
+            return jsonify({"error": "Paryapt lakdi nahi hai!"}), 400
+        coins_earned = amount * 10
+        cursor.execute("UPDATE players SET wood = wood - ?, coins = coins + ? WHERE player_id = ?", 
+                       (amount, coins_earned, player_id))
+    elif item_type == "tokens":
+        if player["tokens"] < amount:
+            conn.close()
+            return jsonify({"error": "Paryapt token nahi hain!"}), 400
+        coins_earned = amount * 25
+        cursor.execute("UPDATE players SET tokens = tokens - ?, coins = coins + ? WHERE player_id = ?", 
+                       (amount, coins_earned, player_id))
+    else:
+        conn.close()
+        return jsonify({"error": "Invalid item type"}), 400
+
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success", "coins_earned": coins_earned})
+
+# 4. Market - Buy Items with Coins
+SHOP_CATALOG = {
+    "Iron_Armor": 100,
+    "Combat_Sniper": 250,
+    "Medkit": 20
+}
+
+@app.route('/api/market/buy', methods=['POST'])
+def buy_item():
+    data = request.json
+    player_id = data.get("player_id")
+    item_name = data.get("item_name")
+
+    if item_name not in SHOP_CATALOG:
+        return jsonify({"error": "Item shop me uplabdh nahi hai"}), 404
+
+    item_price = SHOP_CATALOG[item_name]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM players WHERE player_id = ?", (player_id,))
+    player = cursor.fetchone()
+
+    if not player or player["is_banned"] == 1:
+        conn.close()
+        return jsonify({"error": "Access denied"}), 403
+
+    if player["coins"] < item_price:
+        conn.close()
+        return jsonify({"error": "Kharidne ke liye paryapt coins nahi hain!"}), 400
+
+    # Deduct coins & add to inventory
+    cursor.execute("UPDATE players SET coins = coins - ? WHERE player_id = ?", (item_price, player_id))
+    cursor.execute("INSERT INTO inventory (player_id, item_name, quantity) VALUES (?, ?, 1)", (player_id, item_name))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success", "message": f"{item_name} kharida gaya!"})
+
+# ================= External App / Unban API =================
+# Ye endpoints aap apne ban management app se connect kar sakte hain
+
+ADMIN_API_KEY = "FF_OFFICIAL_SUPER_SECRET_KEY"
+
+# External App: Check Banned List
+@app.route('/api/admin/banned_users', methods=['GET'])
+def get_banned_players():
+    api_key = request.headers.get("X-Admin-Key")
+    if api_key != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized Access"}), 401
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT player_id, username, ban_reason FROM players WHERE is_banned = 1")
+    rows = cursor.fetchall()
+    conn.close()
+
+    banned_list = [{"player_id": r["player_id"], "username": r["username"], "reason": r["ban_reason"]} for r in rows]
+    return jsonify({"banned_players": banned_list})
+
+# External App: Unban Player
+@app.route('/api/admin/unban', methods=['POST'])
+def unban_player():
+    api_key = request.headers.get("X-Admin-Key")
+    if api_key != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized Access"}), 401
+
+    data = request.json
+    player_id = data.get("player_id")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM players WHERE player_id = ?", (player_id,))
+    player = cursor.fetchone()
+
+    if not player:
+        conn.close()
+        return jsonify({"error": "Player nahi mila"}), 404
+
+    cursor.execute("UPDATE players SET is_banned = 0, ban_reason = '' WHERE player_id = ?", (player_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "success", "message": f"Player {player_id} safalta-purvak unban ho gaya!"})
+
+# Server Starter
+if __name__ == '__main__':
+    print("FF official Server chal raha hai port 5000 par...")
+    app.run(host='0.0.0.0', port=5000, debug=True)
+      
