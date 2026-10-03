@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <title>Ludo Game (Red vs Green)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    body {
+      background: #1e293b;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 10px;
+    }
+    h1 {
+      margin-bottom: 12px;
+      font-size: 1.6rem;
+      letter-spacing: 1px;
+    }
+    .game-layout {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+    }
+    canvas {
+      background: #f8fafc;
+      border: 4px solid #0f172a;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      background: #334155;
+      padding: 12px 24px;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 480px;
+      justify-content: space-between;
+    }
+    .turn-badge {
+      font-size: 1.1rem;
+      font-weight: bold;
+    }
+    .dice-btn {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      font-size: 1.3rem;
+      font-weight: bold;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      min-width: 110px;
+      transition: 0.1s;
+    }
+    .dice-btn:disabled {
+      background: #64748b;
+      cursor: not-allowed;
+    }
+    #status-msg {
+      font-size: 0.95rem;
+      color: #fbbf24;
+      font-weight: 500;
+      min-height: 24px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎲 Ludo Game (2 Players)</h1>
+
+  <div class="game-layout">
+    <div class="controls">
+      <div class="turn-badge" id="turn-txt">Turn: <span style="color:#ef4444">RED</span></div>
+      <button id="roll-btn" class="dice-btn" onclick="rollDice()">Roll 🎲</button>
+    </div>
+
+    <div id="status-msg">Dice roll karein!</div>
+
+    <canvas id="ludoCanvas" width="450" height="450"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("ludoCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const GRID = 15;
+    const SIZE = canvas.width / GRID; // 30px per cell
+
+    // Complete Track Path (0 to 51)
+    const track = [
+      [6,1],[6,2],[6,3],[6,4],[6,5],
+      [5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
+      [0,7],[0,8],
+      [1,8],[2,8],[3,8],[4,8],[5,8],
+      [6,9],[6,10],[6,11],[6,12],[6,13],[6,14],
+      [7,14],[8,14],
+      [8,13],[8,12],[8,11],[8,10],[8,9],
+      [9,8],[10,8],[11,8],[12,8],[13,8],[14,8],
+      [14,7],[14,6],
+      [13,6],[12,6],[11,6],[10,6],[9,6],
+      [8,5],[8,4],[8,3],[8,2],[8,1],[8,0],
+      [7,0],[6,0]
+    ];
+
+    // Home Stretch Paths (Leading to Home center at [7,7])
+    const redHomePath = [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6],[7,7]];
+    const greenHomePath = [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8],[7,7]];
+
+    // Game State
+    let turn = 'RED'; // 'RED' or 'GREEN'
+    let diceValue = null;
+    let waitingForMove = false;
+    let gameOver = false;
+
+    // Tokens state: step = -1 (Base), 0..50 (Main Track), 51..57 (Home Run), 57 (Finished)
+    const players = {
+      RED: {
+        color: '#dc2626',
+        startTrackIndex: 0,
+        baseCoords: [{x: 2.5, y: 2.5}, {x: 3.5, y: 3.5}],
+        tokens: [{ id: 0, step: -1 }, { id: 1, step: -1 }]
+      },
+      GREEN: {
+        color: '#16a34a',
+        startTrackIndex: 26,
+        baseCoords: [{x: 11.5, y: 11.5}, {x: 12.5, y: 12.5}],
+        tokens: [{ id: 0, step: -1 }, { id: 1, step: -1 }]
+      }
+    };
+
+    function setStatus(msg) {
+      document.getElementById("status-msg").innerText = msg;
+    }
+
+    function rollDice() {
+      if (waitingForMove || gameOver) return;
+
+      diceValue = Math.floor(Math.random() * 6) + 1;
+      const btn = document.getElementById("roll-btn");
+      btn.innerText = `Dice: ${diceValue}`;
+      btn.disabled = true;
+
+      const p = players[turn];
+      const movableTokens = p.tokens.filter(t => canMove(t, diceValue));
+
+      if (movableTokens.length === 0) {
+        setStatus(`Koi move sambhav nahi hai. Turn switch hui!`);
+        setTimeout(() => {
+          passTurn();
+        }, 900);
+      } else if (movableTokens.length === 1 && (p.tokens[0].step === -1 && p.tokens[1].step === -1)) {
+        // Automatic out if both at base and 6 rolled
+        setTimeout(() => moveToken(movableTokens[0]), 300);
+      } else {
+        waitingForMove = true;
+        setStatus(`Token par click karke aage badhayein!`);
+        drawBoard();
+      }
+    }
+
+    function canMove(token, dice) {
+      if (token.step === 57) return false;
+      if (token.step === -1) return dice === 6;
+      return (token.step + dice) <= 57;
+    }
+
+    function getTokenCell(playerKey, token) {
+      const p = players[playerKey];
+      if (token.step === -1) {
+        return p.baseCoords[token.id];
+      }
+      if (token.step < 51) {
+        const idx = (p.startTrackIndex + token.step) % track.length;
+        return { x: track[idx][0], y: track[idx][1] };
+      }
+      const homeStep = token.step - 51;
+      const path = playerKey === 'RED' ? redHomePath : greenHomePath;
+      const pt = path[homeStep];
+      return { x: pt[0], y: pt[1] };
+    }
+
+    function moveToken(token) {
+      const p = players[turn];
+      let bonusTurn = (diceValue === 6);
+
+      if (token.step === -1) {
+        token.step = 0;
+        setStatus(`${turn} ka token bahar nikla!`);
+      } else {
+        token.step += diceValue;
+      }
+
+      // Check Opponent Cut (Only on main track, safe points excluded)
+      if (token.step < 51) {
+        const curCell = getTokenCell(turn, token);
+        const oppKey = (turn === 'RED') ? 'GREEN' : 'RED';
+        const opp = players[oppKey];
+
+        opp.tokens.forEach(oppToken => {
+          if (oppToken.step >= 0 && oppToken.step < 51) {
+            const oppCell = getTokenCell(oppKey, oppToken);
+            if (oppCell.x === curCell.x && oppCell.y === curCell.y) {
+              oppToken.step = -1; // Send back to base
+              bonusTurn = true;
+              setStatus(`💥 Zabardast! Opponent ka token cut gaya! Bonus turn mila!`);
+            }
+          }
+        });
+      }
+
+      // Check Victory
+      if (p.tokens.every(t => t.step === 57)) {
+        gameOver = true;
+        setStatus(`🎉 Badhaai ho! Player ${turn} jeet gaya!`);
+        document.getElementById("turn-txt").innerText = `${turn} WON!`;
+        drawBoard();
+        return;
+      }
+
+      waitingForMove = false;
+      drawBoard();
+
+      if (bonusTurn) {
+        const btn = document.getElementById("roll-btn");
+        btn.disabled = false;
+        btn.innerText = "Roll 🎲";
+        setStatus(`Bonus roll mila! Dobara roll karein.`);
+      } else {
+        passTurn();
+      }
+    }
+
+    function passTurn() {
+      turn = (turn === 'RED') ? 'GREEN' : 'RED';
+      waitingForMove = false;
+      diceValue = null;
+
+      const badge = document.getElementById("turn-txt");
+      badge.innerHTML = `Turn: <span style="color:${players[turn].color}">${turn}</span>`;
+
+      const btn = document.getElementById("roll-btn");
+      btn.innerText = "Roll 🎲";
+      btn.disabled = false;
+      drawBoard();
+    }
+
+    // Canvas click to select token
+    canvas.addEventListener("click", (e) => {
+      if (!waitingForMove || gameOver) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      const p = players[turn];
+      for (let token of p.tokens) {
+        if (!canMove(token, diceValue)) continue;
+
+        const cell = getTokenCell(turn, token);
+        const centerX = cell.x * SIZE + SIZE / 2;
+        const centerY = cell.y * SIZE + SIZE / 2;
+
+        const dist = Math.hypot(clickX - centerX, clickY - centerY);
+        if (dist <= SIZE / 1.5) {
+          moveToken(token);
+          break;
+        }
+      }
+    });
+
+    // Board Rendering
+    function drawBoard() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 1. Grid Board Outlines
+      for (let r = 0; r < GRID; r++) {
+        for (let c = 0; c < GRID; c++) {
+          ctx.strokeStyle = "#cbd5e1";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(c * SIZE, r * SIZE, SIZE, SIZE);
+        }
+      }
+
+      // 2. Bases & Corners
+      ctx.fillStyle = "#ef4444";
+      ctx.fillRect(0, 0, 6 * SIZE, 6 * SIZE); // Red Base
+      ctx.fillStyle = "#16a34a";
+      ctx.fillRect(9 * SIZE, 9 * SIZE, 6 * SIZE, 6 * SIZE); // Green Base
+      ctx.fillStyle = "#3b82f6";
+      ctx.fillRect(9 * SIZE, 0, 6 * SIZE, 6 * SIZE); // Blue Empty Area
+      ctx.fillStyle = "#eab308";
+      ctx.fillRect(0, 9 * SIZE, 6 * SIZE, 6 * SIZE); // Yellow Empty Area
+
+      // Inner Base White Circles
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(SIZE, SIZE, 4 * SIZE, 4 * SIZE);
+      ctx.fillRect(10 * SIZE, 10 * SIZE, 4 * SIZE, 4 * SIZE);
+
+      // 3. Home Paths
+      ctx.fillStyle = "#fca5a5";
+      for (let pt of redHomePath.slice(0, 6)) {
+        ctx.fillRect(pt[0] * SIZE, pt[1] * SIZE, SIZE, SIZE);
+      }
+      ctx.fillStyle = "#86efac";
+      for (let pt of greenHomePath.slice(0, 6)) {
+        ctx.fillRect(pt[0] * SIZE, pt[1] * SIZE, SIZE, SIZE);
+      }
+
+      // Home Center Triangle Area
+      ctx.fillStyle = "#e2e8f0";
+      ctx.fillRect(6 * SIZE, 6 * SIZE, 3 * SIZE, 3 * SIZE);
+
+      // Start Arrow Cells
+      ctx.fillStyle = "#ef4444";
+      ctx.fillRect(track[0][0] * SIZE, track[0][1] * SIZE, SIZE, SIZE);
+      ctx.fillStyle = "#16a34a";
+      ctx.fillRect(track[26][0] * SIZE, track[26][1] * SIZE, SIZE, SIZE);
+
+      // 4. Render Tokens
+      ['RED', 'GREEN'].forEach(pKey => {
+        const p = players[pKey];
+        p.tokens.forEach(token => {
+          const cell = getTokenCell(pKey, token);
+          const cx = cell.x * SIZE + SIZE / 2;
+          const cy = cell.y * SIZE + SIZE / 2;
+
+          // Highlight movable tokens during player's turn
+          if (waitingForMove && turn === pKey && canMove(token, diceValue)) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, SIZE / 2 + 3, 0, Math.PI * 2);
+            ctx.fillStyle = "#facc15";
+            ctx.fill();
+          }
+
+          // Main Token Body
+          ctx.beginPath();
+          ctx.arc(cx, cy, SIZE / 2.6, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.fill();
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = "#ffffff";
+          ctx.stroke();
+
+          // Finished Indicator
+          if (token.step === 57) {
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 12px Arial";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("✓", cx, cy);
+          }
+        });
+      });
+    }
+
+    drawBoard();
+  </script>
+</body>
+  </html>
+  
