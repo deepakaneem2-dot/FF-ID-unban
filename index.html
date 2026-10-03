@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Scorpion Cursor Animation</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background-color: #0b0b0d;
+      overflow: hidden;
+      cursor: crosshair;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+
+    let width = (canvas.width = window.innerWidth);
+    let height = (canvas.height = window.innerHeight);
+
+    window.addEventListener("resize", () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+
+    const mouse = { x: width / 2, y: height / 2 };
+
+    window.addEventListener("mousemove", (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    });
+
+    // Segment Class for Inverse Kinematics
+    class Segment {
+      constructor(x, y, length, angle = 0) {
+        this.x = x;
+        this.y = y;
+        this.length = length;
+        this.angle = angle;
+        this.b = { x: x, y: y };
+        this.calculateB();
+      }
+
+      calculateB() {
+        const dx = this.length * Math.cos(this.angle);
+        const dy = this.length * Math.sin(this.angle);
+        this.b = { x: this.x + dx, y: this.y + dy };
+      }
+
+      follow(targetX, targetY) {
+        const dirX = targetX - this.x;
+        const dirY = targetY - this.y;
+        this.angle = Math.atan2(dirY, dirX);
+        this.x = targetX - Math.cos(this.angle) * this.length;
+        this.y = targetY - Math.sin(this.angle) * this.length;
+        this.calculateB();
+      }
+    }
+
+    // Creature spine and limbs generator
+    class Scorpion {
+      constructor(x, y) {
+        this.numSegments = 28;
+        this.segLength = 12;
+        this.segments = [];
+
+        for (let i = 0; i < this.numSegments; i++) {
+          this.segments.push(new Segment(x, y, this.segLength));
+        }
+
+        // Leg definitions: [segment_index, side(-1 or 1), length1, length2, phase]
+        this.legs = [
+          { seg: 4, side: 1, l1: 28, l2: 24, phase: 0 },
+          { seg: 4, side: -1, l1: 28, l2: 24, phase: Math.PI },
+          { seg: 7, side: 1, l1: 32, l2: 26, phase: 1 },
+          { seg: 7, side: -1, l1: 32, l2: 26, phase: 1 + Math.PI },
+          { seg: 10, side: 1, l1: 30, l2: 25, phase: 2 },
+          { seg: 10, side: -1, l1: 30, l2: 25, phase: 2 + Math.PI },
+          { seg: 13, side: 1, l1: 26, l2: 20, phase: 3 },
+          { seg: 13, side: -1, l1: 26, l2: 20, phase: 3 + Math.PI }
+        ];
+
+        this.time = 0;
+      }
+
+      update() {
+        this.time += 0.08;
+
+        // Head smoothly follows cursor
+        const head = this.segments[0];
+        const dx = mouse.x - head.x;
+        const dy = mouse.y - head.y;
+        head.x += dx * 0.15;
+        head.y += dy * 0.15;
+        head.follow(head.x, head.y);
+
+        // Body segments follow previous segment
+        for (let i = 1; i < this.segments.length; i++) {
+          this.segments[i].follow(this.segments[i - 1].x, this.segments[i - 1].y);
+        }
+      }
+
+      draw() {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.lineWidth = 1.6;
+
+        // 1. Draw Legs
+        for (let leg of this.legs) {
+          const seg = this.segments[leg.seg];
+          const normal = seg.angle + (Math.PI / 2) * leg.side;
+
+          // Leg root / hip position
+          const hipX = seg.x + Math.cos(normal) * 6;
+          const hipY = seg.y + Math.sin(normal) * 6;
+
+          // Walking swing motion
+          const swing = Math.sin(this.time * 2 + leg.phase) * 0.4;
+          const kneeAngle = normal + 0.3 * leg.side + swing;
+
+          const kneeX = hipX + Math.cos(kneeAngle) * leg.l1;
+          const kneeY = hipY + Math.sin(kneeAngle) * leg.l1;
+
+          const footAngle = kneeAngle + 0.9 * leg.side;
+          const footX = kneeX + Math.cos(footAngle) * leg.l2;
+          const footY = kneeY + Math.sin(footAngle) * leg.l2;
+
+          ctx.beginPath();
+          ctx.moveTo(hipX, hipY);
+          ctx.lineTo(kneeX, kneeY);
+          ctx.lineTo(footX, footY);
+          ctx.stroke();
+
+          // Joint dots
+          ctx.beginPath();
+          ctx.arc(footX, footY, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // 2. Draw Spine & Ribs
+        for (let i = 0; i < this.segments.length; i++) {
+          const s = this.segments[i];
+          const normal = s.angle + Math.PI / 2;
+
+          // Rib width decreases towards the tail
+          let ribWidth = 14;
+          if (i > 14) ribWidth = Math.max(2, 14 - (i - 14) * 0.9);
+
+          const rx1 = s.x + Math.cos(normal) * ribWidth;
+          const ry1 = s.y + Math.sin(normal) * ribWidth;
+          const rx2 = s.x - Math.cos(normal) * ribWidth;
+          const ry2 = s.y - Math.sin(normal) * ribWidth;
+
+          ctx.beginPath();
+          ctx.moveTo(rx1, ry1);
+          ctx.lineTo(rx2, ry2);
+          ctx.stroke();
+
+          // Spine connection
+          if (i < this.segments.length - 1) {
+            const next = this.segments[i + 1];
+            ctx.beginPath();
+            ctx.moveTo(s.x, s.y);
+            ctx.lineTo(next.x, next.y);
+            ctx.stroke();
+          }
+
+          // Spine node dot
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    const creature = new Scorpion(width / 2, height / 2);
+
+    function animate() {
+      // Trail effect
+      ctx.fillStyle = "rgba(11, 11, 13, 0.3)";
+      ctx.fillRect(0, 0, width, height);
+
+      creature.update();
+      creature.draw();
+
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
